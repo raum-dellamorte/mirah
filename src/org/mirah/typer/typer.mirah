@@ -53,7 +53,7 @@ import org.mirah.jvm.mirrors.*
 # This typer is type system independent. It relies on a TypeSystem and a Scoper
 # to provide the types for methods, literals, variables, etc.
 class Typer < SimpleNodeVisitor
-  def self.initialize:void
+  def self.initialize: void
     @@log = Logger.getLogger(Typer.class.getName)
   end
 
@@ -79,7 +79,7 @@ class Typer < SimpleNodeVisitor
     @macros
   end
 
-  def macro_compiler=(compiler:MacroBuilder)
+  def macro_compiler=(compiler: MacroBuilder)
     @macros = compiler
   end
 
@@ -91,11 +91,20 @@ class Typer < SimpleNodeVisitor
     @scopes
   end
 
-  def getInferredType(node:Node)
+  def getInferredType(node: Node)
     TypeFuture(@futures[node])
   end
 
-  def inferTypeName(node:TypeName)
+  def getResolvedType(node: Node)
+    future = getInferredType(node)
+    if future
+      future.resolve
+    else
+      nil
+    end
+  end
+
+  def inferTypeName(node: TypeName)
     @futures[node] ||= getTypeOf(node, node.typeref)
     TypeFuture(@futures[node])
   end
@@ -119,33 +128,33 @@ class Typer < SimpleNodeVisitor
     TypeFuture(type)
   end
 
-  def infer(node:Object, expression:boolean=true)
+  def infer(node: Object, expression:boolean=true)
     infer(Node(node), expression)
   end
 
   def inferAll(nodes:NodeList)
     types = ArrayList.new
-    nodes.each {|n| types.add(infer(n))} if nodes
+    nodes.each {|n| types.add infer(n) } if nodes
     types
   end
 
   def inferAll(nodes:AnnotationList)
     types = ArrayList.new
-    nodes.each {|n| types.add(infer(n))} if nodes
+    nodes.each {|n| types.add infer(n) } if nodes
     types
   end
 
-  def inferAll(arguments:Arguments)
+  def inferAll(arguments: Arguments)
     types = ArrayList.new
-    arguments.required.each {|a| types.add(infer(a))} if arguments.required
-    arguments.optional.each {|a| types.add(infer(a))} if arguments.optional
-    types.add(infer(arguments.rest)) if arguments.rest
-    arguments.required2.each {|a| types.add(infer(a))} if arguments.required2
-    types.add(infer(arguments.block)) if arguments.block
+    arguments.required.each {|a| types.add infer(a) } if arguments.required
+    arguments.optional.each {|a| types.add infer(a) } if arguments.optional
+    types.add infer(arguments.rest) if arguments.rest
+    arguments.required2.each {|a| types.add infer(a) } if arguments.required2
+    types.add infer(arguments.block) if arguments.block
     types
   end
 
-  def inferAll(scope:Scope, typeNames:TypeNameList)
+  def inferAll(scope: Scope, typeNames: TypeNameList)
     types = ArrayList.new
     typeNames.each {|n| types.add(inferTypeName(TypeName(n)))}
     types
@@ -153,6 +162,7 @@ class Typer < SimpleNodeVisitor
 
   def defaultNode(node, expression)
     return TypeFutureTypeRef(node).type_future if node.kind_of?(TypeFutureTypeRef)
+
     ErrorType.new([["Inference error: unsupported node #{node}", node.position]])
   end
 
@@ -162,23 +172,17 @@ class Typer < SimpleNodeVisitor
 
   def visitVCall(call, expression)
     @@log.fine "visitVCall #{call}"
-    workaroundASTBug call
 
     # This might be a local, method call, or primitive access,
     # so try them all.
 
-    methodType = callMethodType call, Collections.emptyList
-    targetType = infer(call.target)
     fcall = FunctionalCall.new(call.position,
                                Identifier(call.name.clone),
                                nil, nil)
     fcall.setParent(call.parent)
 
-
-    methodType = callMethodType call, Collections.emptyList
-    targetType = infer(call.target)
-    @futures[fcall] = methodType
-    @futures[fcall.target] = targetType
+    @futures[fcall] = callMethodType call, Collections.emptyList
+    @futures[fcall.target] = infer(call.target)
 
     proxy = ProxyNode.new(self, call)
     proxy.setChildren([LocalAccess.new(call.position, call.name),
@@ -189,9 +193,8 @@ class Typer < SimpleNodeVisitor
   end
 
   def visitFunctionalCall(call, expression)
-    workaroundASTBug call
     parameters = inferParameterTypes call
-    @futures[call] = methodType = callMethodType(call, parameters)
+    @futures[call] = callMethodType(call, parameters)
 
     proxy = ProxyNode.new(self, call)
     children = ArrayList.new(2)
@@ -242,13 +245,13 @@ class Typer < SimpleNodeVisitor
   def visitCall(call, expression)
     target = infer(call.target)
     parameters = inferParameterTypes call
-    methodType = CallFuture.new(@types,
-                                scopeOf(call),
-                                target,
-                                true,
-                                parameters,
-                                call)
-    @futures[call] = methodType
+
+    @futures[call] = CallFuture.new(@types,
+                                    scopeOf(call),
+                                    target,
+                                    true,
+                                    parameters,
+                                    call)
     
     proxy = ProxyNode.new(self, call)
     children = ArrayList.new(2)
@@ -544,7 +547,7 @@ class Typer < SimpleNodeVisitor
                                Identifier(constant.name.clone),
                                nil, nil)
       fcall.setParent(constant.parent)
-      workaroundASTBug fcall
+
       methodType = callMethodType fcall, Collections.emptyList
       targetType = infer(fcall.target)
       @futures[fcall] = methodType
@@ -560,6 +563,7 @@ class Typer < SimpleNodeVisitor
   def visitIf(stmt, expression)
     infer(stmt.condition, true)
     a = infer(stmt.body, expression != nil) if stmt.body
+    # Can there just be an else? Maybe we could simplify below.
     b = infer(stmt.elseBody, expression != nil) if stmt.elseBody
     if expression && a && b
       type = AssignableTypeFuture.new(stmt.position)
@@ -1092,7 +1096,8 @@ class Typer < SimpleNodeVisitor
     if parameters.size != method_type.parameterTypes.size
       position = block.arguments.position if block.arguments
       position ||= block.position
-      return @futures[block] = ErrorType.new([["Wrong number of methods for block implementing #{method_type}", position]])
+      return @futures[block] = ErrorType.new([
+        ["Wrong number of methods for block implementing #{method_type}", position]])
 
     end
     # parameters.zip(method_type.parameterTypes).each do |...
@@ -1549,16 +1554,11 @@ class Typer < SimpleNodeVisitor
     end
   end
 
-  # FIXME: there's a bug in the AST that doesn't set the
-  # calls target correctly
-  def workaroundASTBug(call: CallSite)
-    call.target.setParent(call)
-  end
-
   def sourceContent node: Node
     return "<source non-existent>" unless node
     sourceContent node.position
   end
+
   def sourceContent pos: Position
     return "<source non-existent>" if pos.nil? || pos.source.nil?
     return "<source start/end negative start:#{pos.startChar} end:#{pos.endChar}>" if  pos.startChar < 0 || pos.endChar < 0
